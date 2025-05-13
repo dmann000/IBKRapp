@@ -1,306 +1,174 @@
-// src/App.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from 'react';
 
 export default function App() {
-  // ▶︎ STATE
-  const [rawInput, setRawInput] = useState("");          // what you type in the textarea
-  const [symbols, setSymbols] = useState([]);            // ["TSLA","AAPL",...]
-  const [tickers, setTickers] = useState({});            // { TSLA: { price, hod, lod, vwap }, ... }
-  const [customStops, setCustomStops] = useState({});    // { TSLA: "318", AAPL: "" }
-  const [limitPrices, setLimitPrices] = useState({});    // { TSLA: "319", ... }
-  const [orders, setOrders] = useState([]);              // [{ orderId, symbol, side, qty, limit, status }, ...]
-  const [error, setError] = useState(null);
+  const [input, setInput] = useState('');
+  const [testMode, setTestMode] = useState(false);
+  const [data, setData] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [subscribed, setSubscribed] = useState(false);
 
-  const pollRef = useRef();                              // store interval ID
-
-  // ▶︎ HELPERS
-  function parseSymbols(text) {
-    return Array.from(
-      new Set(
-        text
-          .split(/[\s,]+/)
-          .map((s) => s.trim().toUpperCase())
-          .filter(Boolean)
-      )
-    );
-  }
-
-  // clear out old data, set new list of symbols, kick off polling
-  function subscribe() {
-    const list = parseSymbols(rawInput);
-    setSymbols(list);
-    setTickers({});
-    setCustomStops({});
-    setLimitPrices({});
-    setError(null);
-
-    // fetch immediately, then every 2s
-    fetchTickers(list);
-    clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => fetchTickers(list), 2000);
-  }
-
-  async function fetchTickers(list) {
-    try {
-      const res = await fetch("/api/watchlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbols: list, testMode: true }),
-      });
-      if (!res.ok) throw new Error(`Price fetch error: ${res.status}`);
-      const data = await res.json();
-      setTickers(data); 
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-
-  async function fetchOrders() {
-    try {
-      const res = await fetch("/api/orders");
-      if (!res.ok) throw new Error(`Orders fetch error: ${res.status}`);
-      const data = await res.json();
-      setOrders(data);
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  // place market/limit order
-  async function doOrder(symbol, side, qty, limit, stop) {
-    const ok = window.confirm(
-      `${side} ${qty}× ${symbol}` +
-        (limit ? ` @ ${limit}` : " MARKET") +
-        (stop ? `, stop @ ${stop}` : "")
-    );
-    if (!ok) return;
-
-    const payload = { symbol, side, qty };
-    if (limit) payload.limit = limit;
-    if (stop) payload.stop = stop;
-
-    const res = await fetch("/api/order", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      alert(`Order error: ${res.status}`);
-    } else {
-      const info = await res.json();
-      alert(`✅ Order placed:\n${JSON.stringify(info,null,2)}`);
-      fetchOrders();
-    }
-  }
-
-  // cancel
-  async function cancelOrder(id) {
-    if (!window.confirm(`Cancel order ${id}?`)) return;
-    const res = await fetch(`/api/order/${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      alert(`Cancel failed: ${res.status}`);
-    } else {
-      fetchOrders();
-    }
-  }
-
-  // ▶︎ LIFECYCLE
+  // poll every 2s once subscribed
   useEffect(() => {
-    // on mount, load existing orders
-    fetchOrders();
-    return () => clearInterval(pollRef.current);
-  }, []);
+    if (!subscribed) return;
+    const id = setInterval(fetchPrices, 2000);
+    fetchPrices();
+    return () => clearInterval(id);
+  }, [subscribed]);
 
-  // ▶︎ RENDER
+  async function fetchPrices() {
+    try {
+      const resp = await fetch('/api/watchlist');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      setData(await resp.json());
+    } catch (e) {
+      setError(`Fetch error: ${e.message}`);
+    }
+  }
+
+  async function updateAndSubscribe() {
+    setError('');
+    setLoading(true);
+    setSubscribed(false);
+
+    const syms = input
+      .split(/[\s,;]+/)
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    try {
+      const resp = await fetch('/api/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: syms, testMode })
+      });
+      if (!resp.ok) throw new Error(`Status ${resp.status}`);
+      setSubscribed(true);
+    } catch (e) {
+      setError(`Subscription error: ${e.message}`);
+      setData({});
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleOrder(symbol, side, ref) {
+    try {
+      const resp = await fetch('/api/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, side, ref })
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const o = await resp.json();
+      alert(
+        `${side === 'BUY' ? '🟢 Long' : '🔴 Short'} ${o.quantity} of ${o.symbol} @ ${o.entryPrice.toFixed(2)}\n` +
+        `Stop @ ${o.stopPrice.toFixed(2)}\nOrder ID: ${o.orderId}`
+      );
+    } catch (e) {
+      alert(`Order error: ${e.message}`);
+    }
+  }
+
   return (
-    <div style={{ padding: 20, fontFamily: "sans-serif" }}>
-      <h1>IB Watchlist (Streaming + Orders)</h1>
+    <div style={{ padding: 20, fontFamily: 'sans-serif' }}>
+      <h1>IB Watchlist (Streaming)</h1>
 
       <textarea
         rows={2}
-        style={{ width: "100%" }}
-        placeholder="TSLA, AAPL, MSFT…"
-        value={rawInput}
-        onChange={(e) => setRawInput(e.target.value)}
+        style={{ width: '100%', fontSize: '1rem' }}
+        placeholder="TSLA, AAPL, MSFT"
+        value={input}
+        onChange={e => setInput(e.target.value)}
       />
 
-      <div style={{ margin: "8px 0" }}>
+      <div style={{ margin: '0.5rem 0' }}>
         <label>
           <input
             type="checkbox"
-            defaultChecked
-            disabled
-          />{" "}
+            checked={testMode}
+            onChange={e => setTestMode(e.target.checked)}
+          />{' '}
           Test mode (overnight as RTH)
-        </label>{" "}
-        <button onClick={subscribe}>Set & Subscribe</button>
+        </label>
       </div>
 
-      {error && (
-        <div style={{ color: "firebrick" }}>
-          {error}
-        </div>
-      )}
-
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          marginTop: 20,
-        }}
+      <button
+        onClick={updateAndSubscribe}
+        disabled={loading || !input.trim()}
+        style={{ padding: '0.5rem 1rem' }}
       >
-        <thead>
-          <tr>
-            <th align="left">Symbol</th>
-            <th align="right">Price</th>
-            <th align="center">HOD (S)</th>
-            <th align="center">LOD (B)</th>
-            <th align="center">VWAP (B/S)</th>
-            <th align="center">Custom</th>
-            <th align="center">Limit</th>
-          </tr>
-        </thead>
-        <tbody>
-          {symbols.map((sym) => {
-            const t = tickers[sym] || {};
-            const qty = Math.floor((200 / (t.last - t.hod || 1)) / 10) * 10;
-            return (
-              <tr key={sym}>
-                <td>{sym}</td>
-                <td align="right">{t.last ?? "—"}</td>
-                <td align="center">
-                  {t.hod ?? "—"}{" "}
-                  <button
-                    onClick={() =>
-                      doOrder(sym, "SELL", qty, null, t.hod)
-                    }
-                    disabled={!t.hod || t.last >= t.hod}
-                  >
-                    S
-                  </button>
-                </td>
-                <td align="center">
-                  {t.lod ?? "—"}{" "}
-                  <button
-                    onClick={() => doOrder(sym, "BUY", qty, null, t.lod)}
-                    disabled={!t.lod || t.last <= t.lod}
-                  >
-                    B
-                  </button>
-                </td>
-                <td align="center">
-                  {t.vwap ?? "—"}{" "}
-                  <button
-                    onClick={() =>
-                      doOrder(sym, "BUY", qty, null, t.vwap)
-                    }
-                    disabled={!t.vwap}
-                  >
-                    B
-                  </button>{" "}
-                  <button
-                    onClick={() =>
-                      doOrder(sym, "SELL", qty, null, t.vwap)
-                    }
-                    disabled={!t.vwap}
-                  >
-                    S
-                  </button>
-                </td>
-                <td align="center">
-                  <input
-                    type="number"
-                    style={{ width: 60 }}
-                    value={customStops[sym] || ""}
-                    onChange={(e) =>
-                      setCustomStops((p) => ({
-                        ...p,
-                        [sym]: e.target.value,
-                      }))
-                    }
-                  />{" "}
-                  <button
-                    onClick={() =>
-                      doOrder(sym, "SELL", qty, null, customStops[sym])
-                    }
-                    disabled={!customStops[sym]}
-                  >
-                    S
-                  </button>
-                </td>
-                <td align="center">
-                  <input
-                    type="number"
-                    style={{ width: 60 }}
-                    value={limitPrices[sym] || ""}
-                    onChange={(e) =>
-                      setLimitPrices((p) => ({
-                        ...p,
-                        [sym]: e.target.value,
-                      }))
-                    }
-                  />{" "}
-                  <button
-                    onClick={() =>
-                      doOrder(sym, "BUY", qty, limitPrices[sym], null)
-                    }
-                    disabled={!limitPrices[sym]}
-                  >
-                    limit
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+        {loading ? 'Subscribing…' : 'Set & Subscribe'}
+      </button>
 
-      <h2 style={{ marginTop: 40 }}>Open Orders</h2>
-      <button onClick={fetchOrders}>⟳ Refresh</button>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          marginTop: 8,
-        }}
-      >
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th>Qty</th>
-            <th>Limit</th>
-            <th>Status</th>
-            <th>Cancel</th>
-          </tr>
-        </thead>
-        <tbody>
-          {orders.length === 0 ? (
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+
+      {subscribed && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 20 }}>
+          <thead>
             <tr>
-              <td colSpan={7} align="center">
-                No open orders
-              </td>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc' }}>
+                Symbol
+              </th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>
+                Price
+              </th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>
+                HOD (S)
+              </th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>
+                LOD (B)
+              </th>
+              <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc' }}>
+                VWAP (B/S)
+              </th>
             </tr>
-          ) : (
-            orders.map((o) => (
-              <tr key={o.orderId}>
-                <td>{o.orderId}</td>
-                <td>{o.symbol}</td>
-                <td>{o.side}</td>
-                <td>{o.qty}</td>
-                <td>{o.limit ?? "MKT"}</td>
-                <td>{o.status}</td>
-                <td>
-                  <button onClick={() => cancelOrder(o.orderId)}>
-                    Cancel
+          </thead>
+          <tbody>
+            {Object.entries(data).map(([sym, e]) => (
+              <tr key={sym}>
+                <td style={{ padding: '0.5rem 0' }}>{sym}</td>
+                <td style={{ padding: '0.5rem 0', textAlign: 'right' }}>
+                  {e.price != null ? e.price.toFixed(2) : '—'}
+                </td>
+                <td style={{ padding: '0.5rem 0', textAlign: 'right' }}>
+                  {e.hod != null ? e.hod.toFixed(2) : '—'}{' '}
+                  <button
+                    onClick={() => handleOrder(sym, 'SELL', 'HOD')}
+                    disabled={!e.hod}
+                  >
+                    S
+                  </button>
+                </td>
+                <td style={{ padding: '0.5rem 0', textAlign: 'right' }}>
+                  {e.lod != null ? e.lod.toFixed(2) : '—'}{' '}
+                  <button
+                    onClick={() => handleOrder(sym, 'BUY', 'LOD')}
+                    disabled={!e.lod}
+                  >
+                    B
+                  </button>
+                </td>
+                <td style={{ padding: '0.5rem 0', textAlign: 'right' }}>
+                  {e.vwap != null ? e.vwap.toFixed(2) : '—'}{' '}
+                  <button
+                    onClick={() => handleOrder(sym, 'BUY', 'VWAP')}
+                    disabled={!e.vwap}
+                  >
+                    B
+                  </button>{' '}
+                  <button
+                    onClick={() => handleOrder(sym, 'SELL', 'VWAP')}
+                    disabled={!e.vwap}
+                  >
+                    S
                   </button>
                 </td>
               </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
