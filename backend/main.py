@@ -4,7 +4,7 @@ import traceback
 import json
 from threading import Thread
 from datetime import datetime, time as dt_time
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,7 @@ from ib_insync import IB, Stock, MarketOrder
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # your React origin
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,20 +23,15 @@ app.add_middleware(
 
 ib = IB()
 
-# Regular trading hours
 TRADING_START = dt_time(9, 30)
-TRADING_END = dt_time(16, 0)
+TRADING_END   = dt_time(16, 0)
 
-# In-memory state
 symbol_data: dict[str, dict] = {}
 current_contracts: list[Stock] = []
-
-# Active WebSocket clients
 clients: set[WebSocket] = set()
 
 
 def _on_pending_tickers(tickers):
-    """Update price, HOD, LOD, VWAP when ticks arrive, then broadcast."""
     now = datetime.now().time()
     for t in tickers:
         sym = t.contract.symbol
@@ -44,38 +39,37 @@ def _on_pending_tickers(tickers):
         if not entry:
             continue
 
-        in_rth = entry['testMode'] or (TRADING_START <= now <= TRADING_END)
+        in_rth = entry["testMode"] or (TRADING_START <= now <= TRADING_END)
         p = t.last if isinstance(t.last, (int, float)) else t.marketPrice()
         if not (isinstance(p, (int, float)) and math.isfinite(p)):
             continue
 
-        entry['price'] = p
-        if in_rth and entry['hod'] is None:
-            entry['hod'] = p
-            entry['lod'] = p
+        entry["price"] = p
+        if in_rth and entry["hod"] is None:
+            entry["hod"] = p
+            entry["lod"] = p
 
         if in_rth:
-            if p > entry['hod']:
-                entry['hod'] = p
-            if p < entry['lod']:
-                entry['lod'] = p
-            size = getattr(t, 'lastSize', 0) or 0
+            if p > entry["hod"]:
+                entry["hod"] = p
+            if p < entry["lod"]:
+                entry["lod"] = p
+            size = getattr(t, "lastSize", 0) or 0
             if size > 0:
-                entry['vwap_num'] += p * size
-                entry['vwap_den'] += size
-                entry['vwap'] = entry['vwap_num'] / entry['vwap_den']
+                entry["vwap_num"] += p * size
+                entry["vwap_den"] += size
+                entry["vwap"] = entry["vwap_num"] / entry["vwap_den"]
 
-    # broadcast snapshot to all WS clients
     asyncio.run_coroutine_threadsafe(_broadcast_update(), ib.loop)
 
 
 async def _broadcast_update():
     payload = {
         sym: {
-            'price': entry['price'],
-            'hod':   entry['hod'],
-            'lod':   entry['lod'],
-            'vwap':  entry['vwap'],
+            "price": entry["price"],
+            "hod":   entry["hod"],
+            "lod":   entry["lod"],
+            "vwap":  entry["vwap"],
         }
         for sym, entry in symbol_data.items()
     }
@@ -99,7 +93,7 @@ def _ib_worker():
     try:
         ib.connect("127.0.0.1", 4002, clientId=1, timeout=20)
         print("✅ Connected to IB Gateway.")
-        ib.reqMarketDataType(4)  # delayed/frozen fallback
+        ib.reqMarketDataType(4)
     except Exception as e:
         print("❌ IB connection failed:", e)
         traceback.print_exc()
@@ -114,8 +108,6 @@ def startup_event():
     Thread(target=_ib_worker, daemon=True).start()
 
 
-# ————— Models —————
-
 class WatchlistReq(BaseModel):
     symbols: list[str]
     testMode: bool = False
@@ -123,44 +115,37 @@ class WatchlistReq(BaseModel):
 
 class OrderReq(BaseModel):
     symbol: str
-    side: Literal['BUY', 'SELL']
-    ref: Literal['HOD', 'LOD', 'VWAP']
+    side: Literal["BUY", "SELL"]
+    ref: Literal["HOD", "LOD", "VWAP", "CUSTOM"]
+    customStop: Optional[float] = None
 
-
-# ————— Subscription Coroutine —————
 
 async def _subscribe(req: WatchlistReq):
-    # clear existing
     for c in current_contracts:
         ib.cancelMktData(c)
     current_contracts.clear()
     symbol_data.clear()
 
-    # init state
     for raw in req.symbols:
         sym = raw.strip().upper()
         symbol_data[sym] = {
-            'price': None,
-            'hod': None,
-            'lod': None,
-            'vwap_num': 0.0,
-            'vwap_den': 0.0,
-            'vwap': None,
-            'testMode': req.testMode
+            "price": None,
+            "hod":   None,
+            "lod":   None,
+            "vwap_num": 0.0,
+            "vwap_den": 0.0,
+            "vwap": None,
+            "testMode": req.testMode
         }
 
-    # qualify symbols
     contracts = [Stock(sym, "SMART", "USD") for sym in symbol_data]
     await ib.qualifyContractsAsync(*contracts)
 
-    # subscribe to market data **on IB loop**
     for c in contracts:
         ib.reqMktData(c, "", snapshot=True, regulatorySnapshot=False)
         ib.reqMktData(c, "", snapshot=False, regulatorySnapshot=False)
         current_contracts.append(c)
 
-
-# ————— HTTP Endpoints —————
 
 @app.post("/api/watchlist")
 def update_watchlist(req: WatchlistReq):
@@ -183,10 +168,10 @@ def update_watchlist(req: WatchlistReq):
 def get_watchlist():
     return {
         sym: {
-            'price': entry['price'],
-            'hod': entry['hod'],
-            'lod': entry['lod'],
-            'vwap': entry['vwap'],
+            "price": entry["price"],
+            "hod":   entry["hod"],
+            "lod":   entry["lod"],
+            "vwap":  entry["vwap"],
         }
         for sym, entry in symbol_data.items()
     }
@@ -199,7 +184,7 @@ def place_order(req: OrderReq):
 
     try:
         fut = asyncio.run_coroutine_threadsafe(
-            _do_order(req.symbol.strip().upper(), req.side, req.ref),
+            _do_order(req.symbol.strip().upper(), req.side, req.ref, req.customStop),
             ib.loop
         )
         return fut.result(timeout=10)
@@ -210,24 +195,28 @@ def place_order(req: OrderReq):
         raise HTTPException(500, f"Order error: {e}")
 
 
-# ————— Order Logic —————
-
-async def _do_order(symbol: str, side: str, ref: str):
+async def _do_order(symbol: str, side: str, ref: str, customStop: Optional[float]):
     entry = symbol_data.get(symbol)
     if not entry:
         raise ValueError(f"{symbol} not in watchlist")
-
-    price = entry['price']
+    price = entry["price"]
     if price is None:
         raise ValueError("Current price not available")
 
-    # calculate stop & risk
-    if side == 'SELL':
-        stop = entry['hod'] if ref == 'HOD' else entry['vwap'] if ref == 'VWAP' else None
-        risk = (stop - price) if stop is not None else None
+    # pick stop & risk
+    if ref == "CUSTOM":
+        if customStop is None:
+            raise ValueError("customStop required for CUSTOM ref")
+        stop = customStop
+        risk = (stop - price) if side == "SELL" else (price - stop)
     else:
-        stop = entry['lod'] if ref == 'LOD' else entry['vwap'] if ref == 'VWAP' else None
-        risk = (price - stop) if stop is not None else None
+        if ref == "HOD":
+            stop = entry["hod"]
+        elif ref == "LOD":
+            stop = entry["lod"]
+        else:  # VWAP
+            stop = entry["vwap"]
+        risk = (stop - price) if side == "SELL" else (price - stop)
 
     if stop is None:
         raise ValueError(f"No reference price for {ref}")
@@ -250,8 +239,6 @@ async def _do_order(symbol: str, side: str, ref: str):
         "orderId": order.orderId
     }
 
-
-# ————— WebSocket Endpoint —————
 
 @app.websocket("/ws/watchlist")
 async def watchlist_ws(ws: WebSocket):
