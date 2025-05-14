@@ -74,7 +74,6 @@ export default function App() {
       if (!resp.ok) throw new Error(`Status ${resp.status}`);
 
       setSymbols(syms);
-      // reset custom stops
       const stops = {};
       syms.forEach(s=>stops[s]='');
       setCustomStops(stops);
@@ -99,11 +98,14 @@ export default function App() {
         body: JSON.stringify(body)
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      alert('Order placed');
     } catch (e) {
       alert(`Order error: ${e.message}`);
     }
   }
+
+  // uniform centered cell style
+  const cellStyle = { border: '1px solid #ccc', padding: '8px', textAlign: 'center' };
+  const headerStyle = { ...cellStyle, background: '#f8f8f8', fontWeight: 'bold' };
 
   return (
     <div style={{ padding:20, fontFamily:'sans-serif' }}>
@@ -116,25 +118,32 @@ export default function App() {
         onChange={e=>setInput(e.target.value)}
       />
 
-      <label>
-        <input
-          type="checkbox"
-          checked={testMode}
-          onChange={e=>setTestMode(e.target.checked)}
-        /> Test mode (overnight as RTH)
-      </label>
-
-      <button onClick={updateAndSubscribe} disabled={loading}>
-        {loading ? 'Subscribing…' : 'Set & Subscribe'}
-      </button>
+      <div style={{ margin: '0.5rem 0' }}>
+        <label>
+          <input
+            type="checkbox"
+            checked={testMode}
+            onChange={e=>setTestMode(e.target.checked)}
+          /> Test mode (overnight as RTH)
+        </label>
+        <button onClick={updateAndSubscribe} disabled={loading} style={{ marginLeft: '1rem' }}>
+          {loading ? 'Subscribing…' : 'Set & Subscribe'}
+        </button>
+      </div>
       {error && <p style={{ color:'red' }}>{error}</p>}
 
       {subscribed && (
         <>
+          {/* Watchlist Table */}
           <table style={{ width:'100%', borderCollapse:'collapse', marginTop:20 }}>
             <thead>
               <tr>
-                <th>Symbol</th><th>Price</th><th>HOD</th><th>LOD</th><th>VWAP</th><th>Custom</th>
+                <th style={headerStyle}>Symbol</th>
+                <th style={headerStyle}>Price</th>
+                <th style={headerStyle}>HOD</th>
+                <th style={headerStyle}>LOD</th>
+                <th style={headerStyle}>VWAP</th>
+                <th style={headerStyle}>Custom</th>
               </tr>
             </thead>
             <tbody>
@@ -142,28 +151,26 @@ export default function App() {
                 const e = data[sym]||{};
                 return (
                   <tr key={sym}>
-                    <td>{sym}</td>
-                    <td style={{ textAlign:'right' }}>
-                      {e.price!=null ? e.price.toFixed(2) : '—'}
-                    </td>
-                    <td style={{ textAlign:'right' }}>
+                    <td style={cellStyle}>{sym}</td>
+                    <td style={cellStyle}>{e.price!=null ? e.price.toFixed(2) : '—'}</td>
+                    <td style={cellStyle}>
                       {e.hod!=null ? e.hod.toFixed(2) : '—'}{' '}
                       <button disabled={!e.hod} onClick={()=>handleOrder(sym,'SELL','HOD')}>S</button>
                     </td>
-                    <td style={{ textAlign:'right' }}>
+                    <td style={cellStyle}>
                       {e.lod!=null ? e.lod.toFixed(2) : '—'}{' '}
                       <button disabled={!e.lod} onClick={()=>handleOrder(sym,'BUY','LOD')}>B</button>
                     </td>
-                    <td style={{ textAlign:'right' }}>
+                    <td style={cellStyle}>
                       {e.vwap!=null ? e.vwap.toFixed(2) : '—'}{' '}
                       <button disabled={!e.vwap} onClick={()=>handleOrder(sym,'BUY','VWAP')}>B</button>{' '}
                       <button disabled={!e.vwap} onClick={()=>handleOrder(sym,'SELL','VWAP')}>S</button>
                     </td>
-                    <td style={{ textAlign:'center' }}>
+                    <td style={cellStyle}>
                       <input
-                        type="number" step="0.01" style={{ width:70 }}
+                        type="number" step="0.01" style={{ width:70, textAlign:'center' }}
                         value={customStops[sym]||''}
-                        onChange={e=>setCustomStops({...customStops, [sym]:e.target.value})}
+                        onChange={e=>setCustomStops({...customStops,[sym]:e.target.value})}
                       />{' '}
                       <button disabled={!customStops[sym]} onClick={()=>handleOrder(sym,'BUY','CUSTOM',customStops[sym])}>B</button>{' '}
                       <button disabled={!customStops[sym]} onClick={()=>handleOrder(sym,'SELL','CUSTOM',customStops[sym])}>S</button>
@@ -174,43 +181,55 @@ export default function App() {
             </tbody>
           </table>
 
+          {/* Orders Table */}
           <h2 style={{ marginTop:40 }}>Open & Filled Orders</h2>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', border:'1px solid #ccc' }}>
             <thead>
               <tr>
-                <th>Order ID</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Filled</th><th>Avg Fill</th><th>Status</th>
+                <th style={headerStyle}>Order ID</th>
+                <th style={headerStyle}>Symbol</th>
+                <th style={headerStyle}>Side</th>
+                <th style={headerStyle}>Qty</th>
+                <th style={headerStyle}>Filled</th>
+                <th style={headerStyle}>Avg Fill</th>
+                <th style={headerStyle}>Status</th>
               </tr>
             </thead>
             <tbody>
               {orders.map(o => (
                 <tr key={o.orderId}>
-                  <td>{o.orderId}</td>
-                  <td>{o.symbol}</td>
-                  <td>{o.side}</td>
-                  <td>{o.quantity}</td>
-                  <td>{o.filled}</td>
-                  <td>{o.avgFillPrice?.toFixed(2)||'—'}</td>
-                  <td>{o.status}</td>
+                  <td style={cellStyle}>{o.orderId}</td>
+                  <td style={cellStyle}>{o.symbol}</td>
+                  <td style={cellStyle}>{o.side}</td>
+                  <td style={cellStyle}>{o.quantity}</td>
+                  <td style={cellStyle}>{o.filled}</td>
+                  <td style={cellStyle}>{o.avgFillPrice?.toFixed(2)||'—'}</td>
+                  <td style={cellStyle}>{o.status}</td>
                 </tr>
               ))}
             </tbody>
           </table>
 
+          {/* Positions Table */}
           <h2 style={{ marginTop:40 }}>Positions (Unrealized P/L)</h2>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', border:'1px solid #ccc' }}>
             <thead>
               <tr>
-                <th>Symbol</th><th>Position</th><th>Avg Cost</th><th>Price</th><th>Unrealized P/L</th>
+                <th style={headerStyle}>Symbol</th>
+                <th style={headerStyle}>Position</th>
+                <th style={headerStyle}>Avg Cost</th>
+                <th style={headerStyle}>Price</th>
+                <th style={headerStyle}>Unrealized P/L</th>
               </tr>
             </thead>
             <tbody>
               {positions.map(p => (
                 <tr key={p.symbol}>
-                  <td>{p.symbol}</td>
-                  <td>{p.position}</td>
-                  <td>{p.avgCost.toFixed(2)}</td>
-                  <td>{p.price.toFixed(2)}</td>
-                  <td>{p.unrealizedPL.toFixed(2)}</td>
+                  <td style={cellStyle}>{p.symbol}</td>
+                  <td style={cellStyle}>{p.position}</td>
+                  <td style={cellStyle}>{p.avgCost.toFixed(2)}</td>
+                  <td style={cellStyle}>{p.price.toFixed(2)}</td>
+                  <td style={cellStyle}>{p.unrealizedPL.toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
