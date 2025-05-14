@@ -9,13 +9,13 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from ib_insync import IB, Stock, MarketOrder
+from ib_insync import IB, Stock, MarketOrder, Position, Trade
 
 # --- App & CORS setup ---
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000"],  # adjust if your React origin differs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,12 +26,14 @@ ib = IB()
 TRADING_START = dt_time(9, 30)
 TRADING_END   = dt_time(16, 0)
 
+# in-memory state
 symbol_data: dict[str, dict] = {}
 current_contracts: list[Stock] = []
 clients: set[WebSocket] = set()
 
 
 def _on_pending_tickers(tickers):
+    """Update price/HOD/LOD/VWAP then broadcast snapshot."""
     now = datetime.now().time()
     for t in tickers:
         sym = t.contract.symbol
@@ -108,6 +110,8 @@ def startup_event():
     Thread(target=_ib_worker, daemon=True).start()
 
 
+# ————— Models —————
+
 class WatchlistReq(BaseModel):
     symbols: list[str]
     testMode: bool = False
@@ -120,12 +124,16 @@ class OrderReq(BaseModel):
     customStop: Optional[float] = None
 
 
+# ————— Subscription —————
+
 async def _subscribe(req: WatchlistReq):
+    # clear existing subscriptions
     for c in current_contracts:
         ib.cancelMktData(c)
     current_contracts.clear()
     symbol_data.clear()
 
+    # initialize state
     for raw in req.symbols:
         sym = raw.strip().upper()
         symbol_data[sym] = {
@@ -138,14 +146,16 @@ async def _subscribe(req: WatchlistReq):
             "testMode": req.testMode
         }
 
+    # qualify and subscribe
     contracts = [Stock(sym, "SMART", "USD") for sym in symbol_data]
     await ib.qualifyContractsAsync(*contracts)
-
     for c in contracts:
         ib.reqMktData(c, "", snapshot=True, regulatorySnapshot=False)
         ib.reqMktData(c, "", snapshot=False, regulatorySnapshot=False)
         current_contracts.append(c)
 
+
+# ————— HTTP Endpoints —————
 
 @app.post("/api/watchlist")
 def update_watchlist(req: WatchlistReq):
@@ -181,7 +191,6 @@ def get_watchlist():
 def place_order(req: OrderReq):
     if not ib.isConnected():
         raise HTTPException(503, "IB Gateway not connected")
-
     try:
         fut = asyncio.run_coroutine_threadsafe(
             _do_order(req.symbol.strip().upper(), req.side, req.ref, req.customStop),
@@ -206,16 +215,11 @@ async def _do_order(symbol: str, side: str, ref: str, customStop: Optional[float
     # pick stop & risk
     if ref == "CUSTOM":
         if customStop is None:
-            raise ValueError("customStop required for CUSTOM ref")
+            raise ValueError("customStop required for CUSTOM stop")
         stop = customStop
         risk = (stop - price) if side == "SELL" else (price - stop)
     else:
-        if ref == "HOD":
-            stop = entry["hod"]
-        elif ref == "LOD":
-            stop = entry["lod"]
-        else:  # VWAP
-            stop = entry["vwap"]
+        stop = entry["hod"] if ref == "HOD" else entry["lod"] if ref == "LOD" else entry["vwap"]
         risk = (stop - price) if side == "SELL" else (price - stop)
 
     if stop is None:
@@ -238,6 +242,45 @@ async def _do_order(symbol: str, side: str, ref: str, customStop: Optional[float
         "stopPrice": stop,
         "orderId": order.orderId
     }
+
+
+# ————— Order & Position Endpoints —————
+
+@app.get("/api/orders")
+def get_orders():
+    orders = []
+    for trade in ib.trades():
+        o = trade.order
+        status = trade.orderStatus.status
+        orders.append({
+            "orderId": o.orderId,
+            "symbol":  trade.contract.symbol,
+            "side":    o.action,
+            "quantity": o.totalQuantity,
+            "filled": trade.orderStatus.filled,
+            "avgFillPrice": trade.orderStatus.avgFillPrice,
+            "status": status
+        })
+    return orders
+
+
+@app.get("/api/positions")
+def get_positions():
+    positions = []
+    for pos in ib.positions():
+        sym = pos.contract.symbol
+        qty = pos.position
+        avgCost = pos.avgCost
+        price = symbol_data.get(sym, {}).get("price") or 0
+        unrealizedPL = (price - avgCost) * qty
+        positions.append({
+            "symbol": sym,
+            "position": qty,
+            "avgCost": avgCost,
+            "price": price,
+            "unrealizedPL": unrealizedPL
+        })
+    return positions
 
 
 @app.websocket("/ws/watchlist")
